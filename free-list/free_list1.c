@@ -11,6 +11,14 @@
 #include <stdio.h>
 #include <stdint.h>
 
+#define FIRST_FIT 0
+#define NEXT_FIT 1
+#define BEST_FIT 2
+
+#ifndef SEARCH_MODE
+#define SEARCH_MODE NEXT_FIT
+#endif
+
 /* A boolean. */
 typedef enum { true = 7, false = 0 } bool;
 
@@ -45,23 +53,63 @@ static Block *free_list_start = NULL;
  */
 static Block *free_list_top = NULL;
 
+#if SEARCH_MODE == NEXT_FIT
 /*
- * Implementation of FIND_BLOCK using the "first fit" method.
+ * The last block that was successfully found by NEXT_FIT.
+ * It's the starting point of the next search.
  */
+static Block *next_fit_start = NULL;
+#endif
+
+#if SEARCH_MODE == FIRST_FIT
+/* Implementation of FIND_BLOCK using the "first-fit" algorithm. */
 Block *first_fit(ptrdiff_t size) {
   Block *blk = free_list_start;
 
   while (blk != NULL) {
     if (blk->used || blk->size < size) {
       blk = blk->next;
-      continue;
+    } else {
+      return blk;
     }
-
-    return blk;
   }
 
   return NULL;
 }
+#endif
+
+#if SEARCH_MODE == NEXT_FIT
+/* Implementation of FIND_BLOCK using the "next-fit" algorithm. */
+Block *next_fit(ptrdiff_t size) {
+  Block *blk = next_fit_start;
+
+  while (blk != NULL) {
+    if (blk->used || blk->size < size) {
+      if (blk->next == NULL) {
+	/* At the end of the free list, wrap around to the start. */
+	blk = free_list_start;
+      } else {
+	blk = blk->next;
+      }
+
+      if (blk == next_fit_start) {
+	/* Stop after one full loop. */
+	return NULL;
+      }
+    } else {
+      /*
+       * The next time this function is called,
+       * start at the block that is now returned.
+       */
+      next_fit_start = blk;
+      return blk;
+    }
+  }
+
+  /* In case NEXT_FIT_START is NULL: */
+  return NULL;
+}
+#endif
 
 /*
  * Find a block of allocated by unused memory.
@@ -69,7 +117,13 @@ Block *first_fit(ptrdiff_t size) {
  * Return NULL if there is no such block.
  */
 Block *find_block(ptrdiff_t size) {
+  #if SEARCH_MODE == FIRST_FIT
   return first_fit(size);
+  #elif SEARCH_MODE == NEXT_FIT
+  return next_fit(size);
+  #else
+  return best_fit(size);
+  #endif
 }
 
 /*
@@ -138,6 +192,9 @@ word_t *alloc(ptrdiff_t size) {
     /* Initialize the heap if this is the first call. */
     if (free_list_start == NULL) {
       free_list_start = blk;
+      #if SEARCH_MODE == NEXT_FIT
+      next_fit_start = blk;
+      #endif
     }
 
     /*
@@ -173,25 +230,39 @@ void free_(word_t *data) {
 }
 
 int main(void) {
-  /* An allocation of three bytes is align to the 8 byte minimum. */
+  printf("Test alloc and free\n");
+  /* Align an allocation of 3 bytes to the 8 byte minimum. */
   word_t *p1 = alloc(3);
   Block *p1_blk = block_header(p1);
-  assert(p1_blk->size == sizeof(word_t));
+  assert(p1_blk->size == 8);
 
-  /* An allocation of 8 bytes stays at 8 bytes. */
+  /* Don't change the size of allocations that happen to be aligned. */
   word_t *p2 = alloc(8);
   Block *p2_blk = block_header(p2);
-  assert(p2_blk->size == sizeof(word_t));
+  assert(p2_blk->size == 8);
 
-  /* An allocation should be free-able. */
+  /* Free the last allocation. */
   free_(p2);
   assert(p2_blk->used == false);
 
-  /* If free'd, the same block will be returned again. */
+  /* Reuse the last free'd allocation. */
   word_t *p3 = alloc(5);
-  Block *p3_blk = block_header(p3);
-  assert(p3_blk == p2_blk);
   assert(p3 == p2);
+
+  #if SEARCH_MODE == NEXT_FIT
+  printf("Test next fit\n");
+  alloc(8);
+  alloc(8);
+  alloc(8);
+  word_t *o1 = alloc(16);
+  word_t *o2 = alloc(16);
+  free_(o1);
+  free_(o2);
+  word_t *o3 = alloc(16);
+  assert(next_fit_start == block_header(o3));
+  word_t *o4 = alloc(16);
+  assert(next_fit_start == block_header(o4));
+  #endif
 
   printf("All assertions passed\n");
 } 
