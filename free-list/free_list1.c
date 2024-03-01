@@ -62,7 +62,7 @@ static Block *next_fit_start = NULL;
 #endif
 
 #if SEARCH_MODE == FIRST_FIT
-/* Implementation of FIND_BLOCK using the "first-fit" algorithm. */
+/* Implementation of FIND_BLOCK using the "first fit" algorithm. */
 Block *first_fit(ptrdiff_t size) {
   Block *blk = free_list_start;
 
@@ -79,7 +79,7 @@ Block *first_fit(ptrdiff_t size) {
 #endif
 
 #if SEARCH_MODE == NEXT_FIT
-/* Implementation of FIND_BLOCK using the "next-fit" algorithm. */
+/* Implementation of FIND_BLOCK using the "next fit" algorithm. */
 Block *next_fit(ptrdiff_t size) {
   Block *blk = next_fit_start;
 
@@ -108,6 +108,33 @@ Block *next_fit(ptrdiff_t size) {
 
   /* In case NEXT_FIT_START is NULL: */
   return NULL;
+}
+#endif
+
+#if SEARCH_MODE == BEST_FIT
+/* Implementation of FIND_BLOCK using the "best fit" algorithm. */
+Block *best_fit(ptrdiff_t size) {
+  /* The free block that fits the size best. */
+  Block *best_block = NULL;
+
+  for (Block *blk = free_list_start; blk != NULL; blk = blk->next) {
+    if (blk->used == false) {
+      if (blk->size == size) {
+	/* Cannot find a better fit. */
+	return blk;
+      } else if (blk->size > size) {
+	if (best_block == NULL || blk->size < best_block->size) {
+	  /*
+	   * If this block fits the size better than the
+	   * best fit so far, update the best fit.
+	   */
+	  best_block = blk;
+	}
+      }
+    }
+  }
+
+  return best_block;
 }
 #endif
 
@@ -262,6 +289,20 @@ int main(void) {
   assert(next_fit_start == block_header(o3));
   word_t *o4 = alloc(16);
   assert(next_fit_start == block_header(o4));
+  #endif
+
+  #if SEARCH_MODE == BEST_FIT
+  printf("Test best fit\n");
+  alloc(8);
+  word_t *z1 = alloc(64);
+  alloc(8);
+  word_t *z2 = alloc(16);
+  free_(z2);
+  free_(z1);
+  word_t *z3 = alloc(16);
+  assert(z3 == z2);
+  word_t *z4 = alloc(64);
+  assert(z4 == z1);
   #endif
 
   printf("All assertions passed\n");
