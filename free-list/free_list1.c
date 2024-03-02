@@ -31,7 +31,7 @@ typedef struct Block Block;
 
 struct Block {
   /* Block object header. */
-  long size;
+  long size;			/* Measured in bytes. */
   bool used;
   Block *next;
 
@@ -69,6 +69,18 @@ static Block *free_list_top = NULL;
 static Block *next_fit_start = NULL;
 #endif
 
+void reset_heap(void) {
+  if (free_list_start == NULL) {
+    return;
+  } else {
+    brk(free_list_start);
+    #if SEARCH_MODE == NEXT_FIT
+    next_fit_start = NULL;
+    #endif
+    free_list_top = NULL;
+    free_list_start = NULL;
+  }
+}
 
 /***********************/
 /* Finding free blocks */
@@ -301,6 +313,11 @@ word_t *alloc(ptrdiff_t size) {
   }
 }
 
+
+/******************/
+/* Freeing blocks */
+/******************/
+
 /*
  * Return the header of an allocation. DATA must be a
  * pointer that was returned by ALLOC.
@@ -310,9 +327,29 @@ Block *block_header(word_t *data) {
   return (Block *) p;
 }
 
+/* Check if BLK can be merged with the next block. */
+bool can_coalesce(Block *blk) {
+  if (blk->next == NULL) return false;
+  bool is_adjacent = (char*) &blk->data + blk->size == (char*) blk->next;
+  return blk->next->used == false && is_adjacent;
+}
+
+/*
+ * Merge BLK with the next block for freeing.
+ * Only call this function if CAN_COALESCE returns true.
+ */
+void coalesce(Block *blk) {
+  assert(can_coalesce(blk));
+  blk->size += blk->next->size + SIZEOF_HDR;
+  blk->next = blk->next->next;
+}
+
 /* Free memory that was allocated by ALLOC. */
 void free_(word_t *data) {
   Block *blk = block_header(data);
+  if (can_coalesce(blk)) {
+    coalesce(blk);
+  }
   blk->used = false;
 }
 
@@ -341,7 +378,20 @@ int main(void) {
   word_t *p3 = alloc(5);
   assert(p3 == p2);
 
+  /* Coalesce adjacent free blocks. */
+  word_t *p4 = alloc(16);
+  Block *p3_blk = block_header(p3);
+  Block *p4_blk = block_header(p4);
+  assert(p3_blk->next == p4_blk);
+  free_(p4);
+  assert(p3_blk->next == p4_blk);
+  free_(p2);
+  assert(p3_blk->next == NULL);
+  assert(p3_blk->size == 24 + SIZEOF_HDR);
+  assert(p3_blk->used == false);
+
   #if SEARCH_MODE == NEXT_FIT
+  reset_heap();
   printf("Test next fit\n");
   alloc(8);
   alloc(8);
@@ -357,10 +407,11 @@ int main(void) {
   #endif
 
   #if SEARCH_MODE == BEST_FIT
+  reset_heap();
   printf("Test best fit\n");
   alloc(8);
   word_t *z1 = alloc(64);
-  Block *after_z1 = block_header(alloc(8));
+  Block *after_z1 = block_header(alloc(8)); /* Avoids coalescing. */
   word_t *z2 = alloc(16);
   free_(z2);
   free_(z1);
