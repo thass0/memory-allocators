@@ -329,9 +329,7 @@ Block *block_header(word_t *data) {
 
 /* Check if BLK can be merged with the next block. */
 bool can_coalesce(Block *blk) {
-  if (blk->next == NULL) return false;
-  bool is_adjacent = (char*) &blk->data + blk->size == (char*) blk->next;
-  return blk->next->used == false && is_adjacent;
+  return blk->next != NULL && blk->next->used == false;
 }
 
 /*
