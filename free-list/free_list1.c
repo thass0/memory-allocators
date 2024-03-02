@@ -344,6 +344,9 @@ void coalesce(Block *blk) {
 
 /* Free memory that was allocated by ALLOC. */
 void free_(word_t *data) {
+  if (data == NULL)
+    return;
+
   Block *blk = block_header(data);
   if (can_coalesce(blk)) {
     coalesce(blk);
@@ -358,6 +361,8 @@ void free_(word_t *data) {
 
 int main(void) {
   printf("Test alloc and free\n");
+  /* alloc(0) can be free'd */
+  free_(alloc(0));
   /* Align an allocation of 3 bytes to the 8 byte minimum. */
   word_t *p1 = alloc(3);
   Block *p1_blk = block_header(p1);
