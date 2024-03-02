@@ -2,14 +2,16 @@
  * A free-list heap allocator that uses sbrk to allocate memory.
  * Based on http://dmitrysoshnikov.com/compilers/writing-a-memory-allocator/
  *
- * Thassilo Schulze, 03/01/2024
+ * Thassilo Schulze, 03/01/2024 - 03/02/2024
  */
 
 #include <stddef.h>
 #include <unistd.h>
 #include <assert.h>
-#include <stdio.h>
 #include <stdint.h>
+
+/* For tests. */
+#include <stdio.h>
 
 #define FIRST_FIT 0
 #define NEXT_FIT 1
@@ -60,6 +62,11 @@ static Block *free_list_top = NULL;
  */
 static Block *next_fit_start = NULL;
 #endif
+
+
+/***********************/
+/* Finding free blocks */
+/***********************/
 
 #if SEARCH_MODE == FIRST_FIT
 /* Implementation of FIND_BLOCK using the "first fit" algorithm. */
@@ -153,6 +160,11 @@ Block *find_block(ptrdiff_t size) {
   #endif
 }
 
+
+/*************************************/
+/* Allocating new memory from the OS */
+/*************************************/
+
 /*
  * Calculate the total number of bytes to request for
  * an allocation that gives the user SIZE bytes.
@@ -181,6 +193,11 @@ Block *request_block(ptrdiff_t size) {
 
   return blk;
 }
+
+
+/***************************************/
+/* Allocation and free implementations */
+/***************************************/
 
 /* Round up the size to the next multiple of the word size. */
 ptrdiff_t align(ptrdiff_t size) {
@@ -255,6 +272,11 @@ void free_(word_t *data) {
   Block *blk = block_header(data);
   blk->used = false;
 }
+
+
+/*********/
+/* Tests */
+/*********/
 
 int main(void) {
   printf("Test alloc and free\n");
