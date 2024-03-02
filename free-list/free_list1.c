@@ -44,6 +44,12 @@ struct Block {
 };
 
 /*
+ * The size of the block header considering that the first
+ * word in the allocation is part of the BLOCK struct.
+ */
+#define SIZEOF_HDR (sizeof(Block) - sizeof(word_t))
+
+/*
  * The first node in the free list. This is where
  * the search for free nodes starts in FIRST_FIT.
  */
@@ -174,7 +180,7 @@ ptrdiff_t alloc_size(ptrdiff_t size) {
    * Add the number of bytes needed for the block's meta
    * data to the number of bytes that the user receives.
    */
-  return size + sizeof(Block) - sizeof(word_t);
+  return size + SIZEOF_HDR;
 }
 
 /* Allocate a new block by requesting more heap memory from the OS */
@@ -195,13 +201,48 @@ Block *request_block(ptrdiff_t size) {
 }
 
 
-/***************************************/
-/* Allocation and free implementations */
-/***************************************/
+/*********************/
+/* Allocating blocks */
+/*********************/
 
 /* Round up the size to the next multiple of the word size. */
 ptrdiff_t align(ptrdiff_t size) {
   return (size + sizeof(word_t) - 1) & ~(sizeof(word_t) - 1);
+}
+
+/*
+ * Check if a block can be split into two blocks so that
+ * one of those blocks has a size greater or equal to SIZE.
+ */
+bool can_split(Block *blk, ptrdiff_t size) {
+  /*
+   * If the given block is big enough that (1) another block
+   * header, (2) the size of the present allocation, and (3)
+   * the minimum amount of memory for another block can fit in
+   * it, then the given block can be split into two.
+   */
+  return SIZEOF_HDR + size + sizeof(word_t) <= blk->size;
+}
+
+/*
+ * Given a free block BLK with a size that is greater or
+ * equal to SIZE bytes, split the block into two blocks so
+ * that only one has to be reused to give the user access to
+ * SIZE bytes.
+ * Only call is function on BLK and SIZE if CAN_SPLIT returns
+ * true when given the same parameters.
+ */
+void split_block(Block *blk, ptrdiff_t size) {
+  assert(can_split(blk, size));
+  ptrdiff_t used = SIZEOF_HDR + size;
+
+  Block *free_blk = (Block *) ((char*) blk) + used;
+  free_blk->size = blk->size - used;
+  free_blk->used = false;
+  free_blk->next = blk->next;
+
+  blk->size = size;
+  blk->next = free_blk;
 }
 
 /*
@@ -220,6 +261,9 @@ word_t *alloc(ptrdiff_t size) {
 
   Block *blk;
   if ((blk = find_block(size)) != NULL) {
+    if (can_split(blk, size)) {
+      split_block(blk, size);
+    }
     blk->used = true;
     return &blk->data;
   } else {
@@ -262,8 +306,7 @@ word_t *alloc(ptrdiff_t size) {
  * pointer that was returned by ALLOC.
  */
 Block *block_header(word_t *data) {
-  size_t hdr_size = sizeof(Block) - sizeof(word_t);
-  char *p = ((char *) data) - hdr_size;
+  char *p = ((char *) data) - SIZEOF_HDR;
   return (Block *) p;
 }
 
@@ -317,14 +360,23 @@ int main(void) {
   printf("Test best fit\n");
   alloc(8);
   word_t *z1 = alloc(64);
-  alloc(8);
+  Block *after_z1 = block_header(alloc(8));
   word_t *z2 = alloc(16);
   free_(z2);
   free_(z1);
   word_t *z3 = alloc(16);
   assert(z3 == z2);
-  word_t *z4 = alloc(64);
+  /* Reuse z1 and split it into two blocks. */
+  word_t *z4 = alloc(32);
   assert(z4 == z1);
+  Block *z4_hdr = block_header(z4);
+  assert(z4_hdr->next->size == 32 - SIZEOF_HDR);
+  assert(z4_hdr->next->next == after_z1);
+  /* Allocate the second block */
+  word_t *z5 = alloc(8);
+  Block *z5_hdr = block_header(z5);
+  assert(z4_hdr->next == z5_hdr);
+  assert(z5_hdr->next == after_z1);
   #endif
 
   printf("All assertions passed\n");
