@@ -13,12 +13,13 @@
 /* For tests. */
 #include <stdio.h>
 
+/* How to search for free blocks. */
 #define FIRST_FIT 0
 #define NEXT_FIT 1
 #define BEST_FIT 2
 
 #ifndef SEARCH_MODE
-#define SEARCH_MODE NEXT_FIT
+#define SEARCH_MODE BEST_FIT
 #endif
 
 /* A boolean. */
@@ -27,13 +28,16 @@ typedef enum { true = 7, false = 0 } bool;
 /* A single word; The smallest unit the allocator works with. */
 typedef uint64_t word_t;
 
-typedef struct Block Block;
-
-struct Block {
-  /* Block object header. */
-  long size;			/* Measured in bytes. */
-  bool used;
-  Block *next;
+typedef struct {
+  /*
+   * Block header. Contains the size of the allocation
+   * (user data) in bytes. This number is aligned to
+   * sizeof(word_t) bytes. The LSB is used to encode
+   * whether the block is used. If so, it's set; otherwise,
+   * it's 0. The second lowest byte is set if this block
+   * is the last one in the chain.
+   */
+  uint64_t hdr;
 
   /*
    * User data. This is the initial word in that data.
@@ -41,13 +45,65 @@ struct Block {
    * of SIZE bytes.
    */
   word_t data;
-};
+} Block;
 
 /*
  * The size of the block header considering that the first
  * word in the allocation is part of the BLOCK struct.
  */
 #define SIZEOF_HDR (sizeof(Block) - sizeof(word_t))
+
+/*
+ * Return the size of the allocation of the given block.
+ * It's measured in bytes.
+ */
+ptrdiff_t sizeb(Block *blk) {
+  return blk->hdr & ~(sizeof(word_t) - 1);
+}
+
+/* Set the size of the given block to SIZE bytes. */
+void set_sizeb(Block *blk, ptrdiff_t size) {
+  assert((size & (sizeof(word_t) - 1)) == 0); /* Must be word aligned. */
+  blk->hdr = size | (blk->hdr & sizeof(word_t) - 1);
+}
+
+/* Return TRUE if the block is used, and FALSE otherwise. */
+bool usedb(Block *blk) {
+  if (blk->hdr & 1) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+/* Set the given block to "used". */
+void set_usedb(Block *blk) {
+  blk->hdr |= 1;
+}
+
+/* The given block to "not used". */
+void unset_usedb(Block *blk) {
+  blk->hdr &= ~1;
+}
+
+/* Set the given block to the last one in the list. */
+void set_lastb(Block *blk) {
+  blk->hdr &= ~2;
+}
+
+/* Set the given block to not be last. */
+void unset_lastb(Block *blk) {
+  blk->hdr |= 2;
+}
+
+/* Return the next block after the given one. */
+Block *nextb(Block *blk) {
+  if ((blk->hdr & 2) == 0) {
+    return NULL;
+  } else {
+    return (Block *) (((ptrdiff_t) blk) + sizeb(blk) + SIZEOF_HDR);
+  }
+}
 
 /*
  * The first node in the free list. This is where
@@ -92,8 +148,8 @@ Block *first_fit(ptrdiff_t size) {
   Block *blk = free_list_start;
 
   while (blk != NULL) {
-    if (blk->used || blk->size < size) {
-      blk = blk->next;
+    if (usedb(blk) || sizeb(blk) < size) {
+      blk = nextb(blk);
     } else {
       return blk;
     }
@@ -109,12 +165,12 @@ Block *next_fit(ptrdiff_t size) {
   Block *blk = next_fit_start;
 
   while (blk != NULL) {
-    if (blk->used || blk->size < size) {
-      if (blk->next == NULL) {
+    if (usedb(blk) || sizeb(blk) < size) {
+      if (nextb(blk) == NULL) {
 	/* At the end of the free list, wrap around to the start. */
 	blk = free_list_start;
       } else {
-	blk = blk->next;
+	blk = nextb(blk);
       }
 
       if (blk == next_fit_start) {
@@ -140,26 +196,26 @@ Block *next_fit(ptrdiff_t size) {
 /* Implementation of FIND_BLOCK using the "best fit" algorithm. */
 Block *best_fit(ptrdiff_t size) {
   /* The free block that fits the size best. */
-  Block *best_block = NULL;
+  Block *best_blk = NULL;
 
-  for (Block *blk = free_list_start; blk != NULL; blk = blk->next) {
-    if (blk->used == false) {
-      if (blk->size == size) {
+  for (Block *blk = free_list_start; blk != NULL; blk = nextb(blk)) {
+    if (usedb(blk) == false) {
+      if (sizeb(blk) == size) {
 	/* Cannot find a better fit. */
 	return blk;
-      } else if (blk->size > size) {
-	if (best_block == NULL || blk->size < best_block->size) {
+      } else if (sizeb(blk) > size) {
+	if (best_blk == NULL || sizeb(blk) < sizeb(best_blk)) {
 	  /*
 	   * If this block fits the size better than the
 	   * best fit so far, update the best fit.
 	   */
-	  best_block = blk;
+	  best_blk = blk;
 	}
       }
     }
   }
 
-  return best_block;
+  return best_blk;
 }
 #endif
 
@@ -233,7 +289,7 @@ bool can_split(Block *blk, ptrdiff_t size) {
    * the minimum amount of memory for another block can fit in
    * it, then the given block can be split into two.
    */
-  return SIZEOF_HDR + size + sizeof(word_t) <= blk->size;
+  return SIZEOF_HDR + size + sizeof(word_t) <= sizeb(blk);
 }
 
 /*
@@ -246,15 +302,24 @@ bool can_split(Block *blk, ptrdiff_t size) {
  */
 void split_block(Block *blk, ptrdiff_t size) {
   assert(can_split(blk, size));
-  ptrdiff_t used = SIZEOF_HDR + size;
+  ptrdiff_t needed = SIZEOF_HDR + size;
 
-  Block *free_blk = (Block *) ((char*) blk) + used;
-  free_blk->size = blk->size - used;
-  free_blk->used = false;
-  free_blk->next = blk->next;
+  Block *free_blk = (Block *) (((ptrdiff_t) blk) + needed);
 
-  blk->size = size;
-  blk->next = free_blk;
+  set_sizeb(free_blk, sizeb(blk) - needed);
+  assert(sizeb(free_blk) == sizeb(blk) - needed);
+
+  if (nextb(blk) == NULL) {
+    set_lastb(free_blk);
+  } else {
+    unset_lastb(free_blk);
+  }
+  assert(nextb(blk) == nextb(free_blk));
+
+  unset_usedb(free_blk);
+  assert(usedb(free_blk) == false);
+  
+  set_sizeb(blk, size);
 }
 
 /*
@@ -276,7 +341,7 @@ word_t *alloc(ptrdiff_t size) {
     if (can_split(blk, size)) {
       split_block(blk, size);
     }
-    blk->used = true;
+    set_usedb(blk);
     return &blk->data;
   } else {
     blk = request_block(size);
@@ -285,9 +350,9 @@ word_t *alloc(ptrdiff_t size) {
     }
 
     /* Initialize the new block. */
-    blk->size = size;
-    blk->used = true;
-    blk->next = NULL;
+    set_sizeb(blk, size);
+    set_usedb(blk);
+    set_lastb(blk);
 
     /* Initialize the heap if this is the first call. */
     if (free_list_start == NULL) {
@@ -298,14 +363,13 @@ word_t *alloc(ptrdiff_t size) {
     }
 
     /*
-     * Update the free list: make the current top
-     * point to the new block and make the new block
-     * the top of the list.
+     * Update the free list: tell the current top
+     * of the list that it's not on top any more
+     * and make the new block the top of the list.
      */
     if (free_list_top != NULL) {
-      free_list_top->next = blk;
+      unset_lastb(free_list_top);
     }
-
     free_list_top = blk;
 
     /* Give the user their memory. */
@@ -323,13 +387,13 @@ word_t *alloc(ptrdiff_t size) {
  * pointer that was returned by ALLOC.
  */
 Block *block_header(word_t *data) {
-  char *p = ((char *) data) - SIZEOF_HDR;
+  ptrdiff_t p = ((ptrdiff_t) data) - SIZEOF_HDR;
   return (Block *) p;
 }
 
 /* Check if BLK can be merged with the next block. */
 bool can_coalesce(Block *blk) {
-  return blk->next != NULL && blk->next->used == false;
+  return nextb(blk) != NULL && usedb(nextb(blk)) == false;
 }
 
 /*
@@ -338,8 +402,10 @@ bool can_coalesce(Block *blk) {
  */
 void coalesce(Block *blk) {
   assert(can_coalesce(blk));
-  blk->size += blk->next->size + SIZEOF_HDR;
-  blk->next = blk->next->next;
+  set_sizeb(blk, sizeb(blk) + sizeb(nextb(blk)) + SIZEOF_HDR);
+  if (nextb(nextb(blk)) == NULL) {
+    set_lastb(blk);
+  }
 }
 
 /* Free memory that was allocated by ALLOC. */
@@ -351,7 +417,8 @@ void free_(word_t *data) {
   if (can_coalesce(blk)) {
     coalesce(blk);
   }
-  blk->used = false;
+
+  unset_usedb(blk);
 }
 
 
@@ -360,22 +427,40 @@ void free_(word_t *data) {
 /*********/
 
 int main(void) {
+  printf("Test block header encoding\n");
+  Block blk = {0};
+  assert(sizeb(&blk) == 0);
+  set_sizeb(&blk, 8);
+  assert(sizeb(&blk) == 8);
+
+  assert(usedb(&blk) == false);
+  set_usedb(&blk);
+  assert(usedb(&blk) == true);
+  unset_usedb(&blk);
+  assert(usedb(&blk) == false);
+
+  assert(nextb(&blk) == NULL);
+  unset_lastb(&blk);
+  assert((ptrdiff_t) nextb(&blk) == ((ptrdiff_t) &blk) + 8 + SIZEOF_HDR);
+  set_lastb(&blk);
+  assert(nextb(&blk) == NULL);
+  
   printf("Test alloc and free\n");
   /* alloc(0) can be free'd */
   free_(alloc(0));
   /* Align an allocation of 3 bytes to the 8 byte minimum. */
   word_t *p1 = alloc(3);
   Block *p1_blk = block_header(p1);
-  assert(p1_blk->size == 8);
+  assert(sizeb(p1_blk) == 8);
 
   /* Don't change the size of allocations that happen to be aligned. */
   word_t *p2 = alloc(8);
   Block *p2_blk = block_header(p2);
-  assert(p2_blk->size == 8);
+  assert(sizeb(p2_blk) == 8);
 
   /* Free the last allocation. */
   free_(p2);
-  assert(p2_blk->used == false);
+  assert(usedb(p2_blk) == false);
 
   /* Reuse the last free'd allocation. */
   word_t *p3 = alloc(5);
@@ -385,13 +470,13 @@ int main(void) {
   word_t *p4 = alloc(16);
   Block *p3_blk = block_header(p3);
   Block *p4_blk = block_header(p4);
-  assert(p3_blk->next == p4_blk);
+  assert(nextb(p3_blk) == p4_blk);
   free_(p4);
-  assert(p3_blk->next == p4_blk);
+  assert(nextb(p3_blk) == p4_blk);
   free_(p2);
-  assert(p3_blk->next == NULL);
-  assert(p3_blk->size == 24 + SIZEOF_HDR);
-  assert(p3_blk->used == false);
+  assert(nextb(p3_blk) == NULL);
+  assert(sizeb(p3_blk) == 24 + SIZEOF_HDR);
+  assert(usedb(p3_blk) == false);
 
   #if SEARCH_MODE == NEXT_FIT
   reset_heap();
@@ -424,13 +509,13 @@ int main(void) {
   word_t *z4 = alloc(32);
   assert(z4 == z1);
   Block *z4_hdr = block_header(z4);
-  assert(z4_hdr->next->size == 32 - SIZEOF_HDR);
-  assert(z4_hdr->next->next == after_z1);
+  assert(sizeb(nextb(z4_hdr)) == 32 - SIZEOF_HDR);
+  assert(nextb(nextb(z4_hdr)) == after_z1);
   /* Allocate the second block */
-  word_t *z5 = alloc(8);
+  word_t *z5 = alloc(16);
   Block *z5_hdr = block_header(z5);
-  assert(z4_hdr->next == z5_hdr);
-  assert(z5_hdr->next == after_z1);
+  assert(nextb(z4_hdr) == z5_hdr);
+  assert(nextb(z5_hdr) == after_z1);
   #endif
 
   printf("All assertions passed\n");
