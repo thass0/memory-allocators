@@ -7,8 +7,8 @@
 #include <assert.h> /* assert */
 #include <stddef.h> /* ptrdiff_t */
 #include <stdint.h> /* intptr_t */
-#include <unistd.h> /* sbrk */
 #include <string.h> /* memcpy */
+#include <unistd.h> /* sbrk */
 
 #include <stdio.h> /* Tests only */
 
@@ -100,6 +100,33 @@ BlockHdr *find_block(ptrdiff_t size) {
 }
 
 /*
+ * Split a block in two parts so that the first half
+ * contains SIZE bytes. If splitting is not possible
+ * because BLK is not big enough to hold another full
+ * block, nothing happens and BLK stays untouched.
+ */
+void split_block(BlockHdr *blk, ptrdiff_t size) {
+  assert(blk != NULL);
+  assert(blk->size >= size);
+
+  ptrdiff_t real_size = sizeof(BlockHdr) + size;
+  if (blk->size < real_size + sizeof(word_t))
+    return;
+
+  BlockHdr *rem = (BlockHdr *)(((ptrdiff_t)blk) + real_size);
+  rem->size = blk->size - real_size;
+  blk->size = size;
+
+  /*
+   * This way around, we don't need to change anything
+   * if BLK is the start of a list.
+   */
+  rem->prev = blk->prev;
+  blk->prev = rem;
+  rem->next = blk;
+}
+
+/*
  * Request memory from the OS to allocate SIZE bytes plus
  * the bytes that are occupied by the block metadata.
  * Return that memory or NULL to signal "Out of memory".
@@ -141,6 +168,7 @@ word_t *alloc(ptrdiff_t size) {
    */
   BlockHdr *blk = NULL;
   if ((blk = find_block(size)) != NULL) {
+    split_block(blk, size);
     remove_block(blk, &global_free_list);
     return user_mem(blk);
   } else {
@@ -160,16 +188,14 @@ void wfree(word_t *mem) {
   if (mem == NULL)
     return;
 
+  BlockHdr *blk = mem_hdr(mem);
+  
   add_block(mem_hdr(mem), &global_free_list);
 }
 
-void *malloc(size_t size) {
-  return alloc(size);
-}
+void *malloc(size_t size) { return alloc(size); }
 
-void free(void *mem) {
-  return wfree(mem);
-}
+void free(void *mem) { return wfree(mem); }
 
 void *realloc(void *mem, size_t size) {
   if (mem == NULL)
@@ -245,6 +271,17 @@ int main(void) {
   printf("TEST: Re-using blocks works\n");
   word_t *a4 = alloc(8);
   assert(mem_hdr(a4) == mem_hdr(a1));
+
+  printf("TEST: Splitting blocks works\n");
+  word_t *a5 = alloc(256);
+  wfree(a5);
+  /* a5 should be re-used and split twice. */
+  word_t *a6 = alloc(64);
+  assert(mem_hdr(a5) == mem_hdr(a6));
+  assert(mem_hdr(a6)->size == 64);
+  word_t *a7 = alloc(64);
+  assert(mem_hdr(a6)->size == 64);
+  assert(((ptrdiff_t)a5) + 64 == (ptrdiff_t)mem_hdr(a7));
 
   return 0;
 }
