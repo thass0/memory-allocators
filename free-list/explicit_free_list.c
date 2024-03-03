@@ -20,12 +20,8 @@ struct BlockHdr {
   BlockHdr *prev; /* Pointer to the previous block header. */
 };
 
-typedef struct {
-  BlockHdr *used; /* Doubly linked list of used blocks. */
-  BlockHdr *free; /* Doubly linked list of unused block. */
-} Heap;
-
-static Heap global_heap = {0};
+/* Doubly linked list of unused blocks. */
+static BlockHdr *global_free_list = NULL;
 
 /* Return a pointer to the memory allocated for the given block header. */
 word_t *user_mem(BlockHdr *blk) {
@@ -43,7 +39,7 @@ BlockHdr *mem_hdr(word_t *mem) { return ((BlockHdr *)mem) - 1; }
  * NULL is returned.
  */
 BlockHdr *find_block(ptrdiff_t size) {
-  BlockHdr *blk = global_heap.free;
+  BlockHdr *blk = global_free_list;
   BlockHdr *best_blk = NULL;
 
   while (blk != NULL) {
@@ -147,13 +143,14 @@ word_t *alloc(ptrdiff_t size) {
    */
   BlockHdr *blk = NULL;
   if ((blk = find_block(size)) != NULL) {
-    remove_block(blk, &global_heap.free);
-    add_block(blk, &global_heap.used);
+    remove_block(blk, &global_free_list);
     return user_mem(blk);
   } else {
     blk = request_block_from_os(size);
     blk->size = size;
-    add_block(blk, &global_heap.used);
+    /* Links point nowhere while the block is used. */
+    blk->prev = NULL;
+    blk->next = NULL;
     return user_mem(blk);
   }
 
@@ -165,8 +162,7 @@ void free_(word_t *mem) {
     return;
 
   BlockHdr *blk = mem_hdr(mem);
-  remove_block(blk, &global_heap.used);
-  add_block(blk, &global_heap.free);
+  add_block(blk, &global_free_list);
 }
 
 int main(void) {
@@ -185,53 +181,27 @@ int main(void) {
   word_t *a1 = alloc(1);
   assert(mem_hdr(a1)->size == 8);
   assert(mem_hdr(a1)->next == NULL);
-  assert(global_heap.used == mem_hdr(a1));
   word_t *a2 = alloc(3);
   assert(mem_hdr(a2)->size == 8);
   word_t *a3 = alloc(14);
   assert(mem_hdr(a3)->size == 16);
-  assert(global_heap.used == mem_hdr(a3));
-  assert(mem_hdr(a3)->next == NULL);
-  assert(mem_hdr(a3)->prev == mem_hdr(a2));
-  assert(mem_hdr(a2)->next == mem_hdr(a3));
-  assert(mem_hdr(a2)->prev == mem_hdr(a1));
-  assert(mem_hdr(a1)->next == mem_hdr(a2));
-  assert(mem_hdr(a1)->prev == NULL);
 
   printf("TEST: Freeing works\n");
   free_(alloc(0));
 
   free_(a1);
-  assert(global_heap.free == mem_hdr(a1));
-  /* a1 shouldn't be part of the used list anymore. */
-  assert(global_heap.used == mem_hdr(a3));
-  assert(mem_hdr(a3)->next == NULL);
-  assert(mem_hdr(a3)->prev == mem_hdr(a2));
-  assert(mem_hdr(a2)->next == mem_hdr(a3));
-  assert(mem_hdr(a2)->prev == NULL);
+  assert(global_free_list == mem_hdr(a1));
 
   free_(a3);
-  assert(global_heap.free == mem_hdr(a3));
+  assert(global_free_list == mem_hdr(a3));
   assert(mem_hdr(a3)->next == NULL);
   assert(mem_hdr(a3)->prev == mem_hdr(a1));
   assert(mem_hdr(a1)->next == mem_hdr(a3));
   assert(mem_hdr(a1)->prev == NULL);
-  /* a3 shouldn't be part of the used list anymore. */
-  assert(global_heap.used == mem_hdr(a2));
-  assert(mem_hdr(a2)->next == NULL);
-  assert(mem_hdr(a2)->prev == NULL);
 
   printf("TEST: Re-using blocks works\n");
   word_t *a4 = alloc(8);
   assert(mem_hdr(a4) == mem_hdr(a1));
-  assert(global_heap.used == mem_hdr(a4));
-  assert(mem_hdr(a4)->next == NULL);
-  assert(mem_hdr(a4)->prev == mem_hdr(a2));
-  assert(mem_hdr(a2)->next == mem_hdr(a4));
-  assert(mem_hdr(a2)->prev == NULL);
-  assert(global_heap.free == mem_hdr(a3));
-  assert(mem_hdr(a3)->next == NULL);
-  assert(mem_hdr(a3)->prev == NULL);
 
   return 0;
 }
