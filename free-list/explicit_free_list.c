@@ -33,6 +33,48 @@ word_t *user_mem(BlockHdr *blk) {
 /* Return a pointer to the block header of the given memory pointer. */
 BlockHdr *mem_hdr(word_t *mem) { return ((BlockHdr *)mem) - 1; }
 
+/* Add a block to the front of a list. */
+void add_block(BlockHdr *blk, BlockHdr **list) {
+  assert(blk != NULL);
+  assert(list != NULL);
+
+  if (*list == NULL) {
+    blk->prev = NULL;
+  } else {
+    /*
+     * Link this block which will become the new start of
+     * the list and the previous start.
+     */
+    (*list)->next = blk;
+    blk->prev = *list;
+  }
+
+  /* Make this block the start of the list. */
+  blk->next = NULL;
+  *list = blk;
+}
+
+/* Remove a block from a list. */
+void remove_block(BlockHdr *blk, BlockHdr **list) {
+  assert(blk != NULL);
+  assert(list != NULL);
+
+  /*
+   * Update the list pointer if the block to remove
+   * is at the start of the list.
+   */
+  if (*list == blk)
+    *list = blk->prev;
+
+  /* Link the blocks on the two sides of this block to each other. */
+  BlockHdr *next = blk->next;
+  BlockHdr *prev = blk->prev;
+  if (next != NULL)
+    next->prev = prev;
+  if (prev != NULL)
+    prev->next = next;
+}
+
 /*
  * Find a free block that is large enough for an allocation
  * of SIZE bytes. Use the best fit method: the smallest block
@@ -79,51 +121,6 @@ BlockHdr *request_block_from_os(ptrdiff_t size) {
 /* Align the given size by rounding it up to the nearest word boundary. */
 ptrdiff_t align(ptrdiff_t size) {
   return (size + (sizeof(word_t) - 1)) & ~(sizeof(word_t) - 1);
-}
-
-/* Add a block to the front of a list. */
-void add_block(BlockHdr *blk, BlockHdr **list) {
-  assert(blk != NULL);
-  assert(list != NULL);
-
-  if (*list == NULL) {
-    blk->prev = NULL;
-  } else {
-    /*
-     * Link this block which will become the new start of
-     * the list and the previous start.
-     */
-    (*list)->next = blk;
-    blk->prev = *list;
-  }
-
-  /* Make this block the start of the list. */
-  blk->next = NULL;
-  *list = blk;
-}
-
-/* Remove a block from a list. */
-void remove_block(BlockHdr *blk, BlockHdr **list) {
-  assert(blk != NULL);
-  assert(list != NULL);
-
-  /*
-   * Update the list pointer if the block to remove
-   * is at the start of the list.
-   */
-  if (*list == blk) {
-    *list = blk->prev;
-  }
-
-  /* Link the blocks on the two sides of this block to each other. */
-  BlockHdr *next = blk->next;
-  BlockHdr *prev = blk->prev;
-  if (next != NULL) {
-    next->prev = prev;
-  }
-  if (prev != NULL) {
-    prev->next = next;
-  }
 }
 
 /*
