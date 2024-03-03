@@ -8,6 +8,7 @@
 #include <stddef.h> /* ptrdiff_t */
 #include <stdint.h> /* intptr_t */
 #include <unistd.h> /* sbrk */
+#include <string.h> /* memcpy */
 
 #include <stdio.h> /* Tests only */
 
@@ -62,7 +63,7 @@ BlockHdr *find_block(ptrdiff_t size) {
  * Return that memory or NULL to signal "Out of memory".
  */
 BlockHdr *request_block_from_os(ptrdiff_t size) {
-  assert(size >= sizeof(word_t));
+  assert((size_t)size >= sizeof(word_t));
 
   /* We need to allocate memory for the block's header and its content. */
   ptrdiff_t real_size = sizeof(BlockHdr) + size;
@@ -157,12 +158,57 @@ word_t *alloc(ptrdiff_t size) {
   return NULL;
 }
 
-void free_(word_t *mem) {
+/* Free a pointer to some words of memory. "wfree" <=> "word free". */
+void wfree(word_t *mem) {
   if (mem == NULL)
     return;
 
+  add_block(mem_hdr(mem), &global_free_list);
+}
+
+void *malloc(size_t size) {
+  return alloc(size);
+}
+
+void free(void *mem) {
+  return wfree(mem);
+}
+
+void *realloc(void *mem, size_t size) {
+  if (mem == NULL)
+    return malloc(size);
+
   BlockHdr *blk = mem_hdr(mem);
-  add_block(blk, &global_free_list);
+  if ((size_t)blk->size >= size) {
+    return mem;
+  } else {
+    void *new_mem = malloc(size);
+    if (new_mem == NULL)
+      return NULL;
+    memcpy(new_mem, mem, blk->size);
+    free(mem);
+    return new_mem;
+  }
+}
+
+void *calloc(size_t n, size_t size) {
+  /*
+   * If N and SIZE are suitably small, skip the division-based
+   * overflow test (for speed). Assuming the minimum width of
+   * size_t is 32 bits, two factors that are both less than 2^16
+   * will never overflow. If that cannot be guaranteed, we used
+   * division to check if the product would overflow.
+   * See https://drj11.wordpress.com/2008/06/04/calloc-when-multiply-overflows/
+   */
+  if ((n > 65535 || size > 65535) && (size_t)-1 / n < size)
+    return NULL;
+
+  void *mem = malloc(size * n);
+  if (mem == NULL)
+    return mem;
+
+  memset(mem, 0, size);
+  return mem;
 }
 
 int main(void) {
@@ -187,12 +233,12 @@ int main(void) {
   assert(mem_hdr(a3)->size == 16);
 
   printf("TEST: Freeing works\n");
-  free_(alloc(0));
+  wfree(alloc(0));
 
-  free_(a1);
+  wfree(a1);
   assert(global_free_list == mem_hdr(a1));
 
-  free_(a3);
+  wfree(a3);
   assert(global_free_list == mem_hdr(a3));
   assert(mem_hdr(a3)->next == NULL);
   assert(mem_hdr(a3)->prev == mem_hdr(a1));
