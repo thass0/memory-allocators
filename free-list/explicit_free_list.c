@@ -5,24 +5,46 @@
  */
 
 #include <assert.h> /* assert */
-#include <stddef.h> /* ptrdiff_t */
+#include <stddef.h> /* ptrdiff_t, size_t, NULL */
 #include <stdint.h> /* intptr_t */
 #include <string.h> /* memcpy */
 #include <unistd.h> /* sbrk */
-
-#include <stdio.h> /* Tests only */
 
 typedef intptr_t word_t;
 
 typedef struct BlockHdr BlockHdr;
 struct BlockHdr {
   ptrdiff_t size; /* Size of the allocation in bytes. */
-  BlockHdr *next; /* Pointer to the next block header. */
-  BlockHdr *prev; /* Pointer to the previous block header. */
+  BlockHdr *next;
+  BlockHdr *prev;
+  /*
+   * NEXT points in the direction of the block that was added
+   * most recently. This means, "it points towards GLOBAL_FREE_LIST"
+   * (so to speak) since that's where blocks are added. If a block
+   * is the first one in the list, NEXT is NULL. If it's the last
+   * one, PREV is NULL.
+   *
+   * To illustrate:
+   *
+   *   prev   next     prev   next     prev   next
+   * +------+------+ +------+------+ +------+------+
+   * | NULL |      | |      |      | |      | NULL |  <- GLOBAL_FREE_LIST
+   * +------+------+ +------+------+ +------+------+
+   *            ^-------^       ^-------^
+   */
 };
 
 /* Doubly linked list of unused blocks. */
 static BlockHdr *global_free_list = NULL;
+/* The first block on the heap. */
+static BlockHdr *init = NULL;
+
+void reset_heap(void) {
+  if (init != NULL)
+    brk(init);
+  init = NULL;
+  global_free_list = NULL;
+}
 
 /* Return a pointer to the memory allocated for the given block header. */
 word_t *user_mem(BlockHdr *blk) {
@@ -39,6 +61,10 @@ void add_block(BlockHdr *blk, BlockHdr **list) {
   assert(list != NULL);
 
   if (*list == NULL) {
+    /*
+     * This block will be the only one in the list.
+     * Make it point to nothing else.
+     */
     blk->prev = NULL;
   } else {
     /*
@@ -110,7 +136,7 @@ void split_block(BlockHdr *blk, ptrdiff_t size) {
   assert(blk->size >= size);
 
   ptrdiff_t real_size = sizeof(BlockHdr) + size;
-  if (blk->size < real_size + sizeof(word_t))
+  if ((size_t)blk->size < real_size + sizeof(word_t))
     return;
 
   BlockHdr *rem = (BlockHdr *)(((ptrdiff_t)blk) + real_size);
@@ -138,6 +164,10 @@ BlockHdr *request_block_from_os(ptrdiff_t size) {
   ptrdiff_t real_size = sizeof(BlockHdr) + size;
 
   BlockHdr *blk = sbrk(0);
+
+  if (init == NULL)
+    init = blk;
+
   if (sbrk(real_size) == (void *)-1) {
     return NULL; /* Out of memory. */
   } else {
@@ -183,14 +213,46 @@ word_t *alloc(ptrdiff_t size) {
   return NULL;
 }
 
+/*
+ * Check if BLKB is adjacent in memory to BLKA.
+ * I.e., BLKA comes and is followed by BLKB.
+ */
+int is_adjacent(BlockHdr *blka, BlockHdr *blkb) {
+  assert(blka != NULL);
+  assert(blkb != NULL);
+  return ((ptrdiff_t)blka) + sizeof(BlockHdr) + blka->size == (size_t)blkb;
+}
+
+/* Merge a block into adjacent blocks. */
+void merge_block(BlockHdr *blk, BlockHdr **list) {
+  assert(blk != NULL);
+
+  /*
+   * We don't need to consider BLK->NEXT, since that's always
+   * NULL here. Merges occur right after adding the given block
+   * to the free list. This means that this block is always the
+   * first one (and thus BLK->NEXT == NULL).
+   */
+
+  if (blk->prev != NULL && is_adjacent(blk, blk->prev)) {
+    blk->size += sizeof(BlockHdr) + blk->prev->size;
+    remove_block(blk->prev, list);
+  }
+
+  if (blk->prev != NULL && is_adjacent(blk->prev, blk)) {
+    blk->prev->size += sizeof(BlockHdr) + blk->size;
+    remove_block(blk, list);
+  }
+}
+
 /* Free a pointer to some words of memory. "wfree" <=> "word free". */
 void wfree(word_t *mem) {
   if (mem == NULL)
     return;
 
   BlockHdr *blk = mem_hdr(mem);
-  
-  add_block(mem_hdr(mem), &global_free_list);
+  add_block(blk, &global_free_list);
+  merge_block(blk, &global_free_list);
 }
 
 void *malloc(size_t size) { return alloc(size); }
@@ -234,8 +296,14 @@ void *calloc(size_t n, size_t size) {
   return mem;
 }
 
+/* Helper to print without doing formatting on the heap. */
+void print(char *s) {
+  assert(s != NULL);
+  write(STDOUT_FILENO, s, strlen(s));
+}
+
 int main(void) {
-  printf("TEST: Aligning works\n");
+  print("TEST: Aligning allocations\n");
   assert(align(0) == 0);
   assert(align(1) == 8);
   assert(align(3) == 8);
@@ -246,7 +314,7 @@ int main(void) {
   assert(align(16) == 16);
   assert(align(121) == 128);
 
-  printf("TEST: Allocating blocks works\n");
+  print("TEST: Allocating blocks\n");
   word_t *a1 = alloc(1);
   assert(mem_hdr(a1)->size == 8);
   assert(mem_hdr(a1)->next == NULL);
@@ -255,7 +323,7 @@ int main(void) {
   word_t *a3 = alloc(14);
   assert(mem_hdr(a3)->size == 16);
 
-  printf("TEST: Freeing works\n");
+  print("TEST: Freeing blocks\n");
   wfree(alloc(0));
 
   wfree(a1);
@@ -268,12 +336,13 @@ int main(void) {
   assert(mem_hdr(a1)->next == mem_hdr(a3));
   assert(mem_hdr(a1)->prev == NULL);
 
-  printf("TEST: Re-using blocks works\n");
+  print("TEST: Re-using blocks\n");
   word_t *a4 = alloc(8);
   assert(mem_hdr(a4) == mem_hdr(a1));
 
-  printf("TEST: Splitting blocks works\n");
-  word_t *a5 = alloc(256);
+  reset_heap();
+  print("TEST: Splitting blocks\n");
+  word_t *a5 = alloc(2 * 64 + sizeof(BlockHdr));
   wfree(a5);
   /* a5 should be re-used and split twice. */
   word_t *a6 = alloc(64);
@@ -283,5 +352,72 @@ int main(void) {
   assert(mem_hdr(a6)->size == 64);
   assert(((ptrdiff_t)a5) + 64 == (ptrdiff_t)mem_hdr(a7));
 
+  reset_heap();
+  print("TEST: Merging blocks\n");
+  /*
+   * No matter the order, allocations that live next
+   * to each other on heap should be merged on free.
+   */
+  word_t *m1 = alloc(8);
+  word_t *m2 = alloc(8);
+  wfree(m2);
+  wfree(m1);
+  assert(mem_hdr(m1)->size == 16 + sizeof(BlockHdr));
+  assert(global_free_list == mem_hdr(m1)); /* m1 is first in the free list. */
+  assert(mem_hdr(m1)->prev ==
+         NULL); /* m1 is the only block in the free list. */
+
+  alloc(8); /* Block merges */
+  /*
+   * From the free block m1, the first 8 bytes have been allocated.
+   * The rest remains in the free list.
+   */
+  assert((size_t)global_free_list ==
+         (size_t)mem_hdr(m1) + 8 + sizeof(BlockHdr));
+  alloc(8); /* Use up all free blocks. */
+  assert(global_free_list == NULL);
+
+  reset_heap();
+  m1 = alloc(8);
+  m2 = alloc(8);
+  wfree(m1);
+  assert(global_free_list == mem_hdr(m1));
+  wfree(m2);
+  assert(global_free_list == mem_hdr(m1));
+  assert(mem_hdr(m1)->prev == NULL);
+  assert(mem_hdr(m1)->size == 16 + sizeof(BlockHdr));
+
+  /*
+   * An allocation of 64 bytes doen't fit the one free block
+   * we have now (which is 16 bytes + sizeof(BlockHdr) bytes
+   * large). So, an entirely new block is requested (of size
+   * 32). When this 32 byte block is free'd,it's memory is
+   * again merged into m1.
+   */
+  word_t *m3 = alloc(64);
+  assert(mem_hdr(m3)->size == 64);
+  /* m3 is new memory, so m1 stays in the free list. */
+  assert(global_free_list == mem_hdr(m1));
+  assert(mem_hdr(m1)->size == 16 + sizeof(BlockHdr));
+  wfree(m3);
+  assert(mem_hdr(m1)->size == 64 + 16 + 2 * sizeof(BlockHdr));
+
+  reset_heap();
+  /*
+   * Add a 8 bytes + 8 bytes + sizeof(BlockHdr) to the heap
+   * by adding and freeing to blocks of size 8 bytes. Since
+   * they are merged, the result is a block larger than 8 bytes.
+   * (This slight increase in the size of merged blocks should
+   * always be kept in mind!)
+   */
+  word_t *m4 = alloc(8);
+  word_t *m5 = alloc(8);
+  wfree(m4);
+  wfree(m5);
+  word_t *m6 = alloc(16 + sizeof(BlockHdr));
+  assert(mem_hdr(m6)->size == 16 + sizeof(BlockHdr));
+  assert(global_free_list == NULL);
+
   return 0;
 }
+
