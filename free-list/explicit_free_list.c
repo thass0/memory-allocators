@@ -10,6 +10,12 @@
 #include <string.h> /* memcpy */
 #include <unistd.h> /* sbrk */
 
+/* Both for the dbg helper. */
+#include <stdarg.h>
+#include <stdio.h> /* vsnprintf */
+
+void dbg(char *fmt, ...);
+
 typedef intptr_t word_t;
 
 typedef struct BlockHdr BlockHdr;
@@ -200,6 +206,7 @@ word_t *alloc(ptrdiff_t size) {
   if ((blk = find_block(size)) != NULL) {
     split_block(blk, size);
     remove_block(blk, &global_free_list);
+    dbg("Re-using %td bytes at %p\n", size, user_mem(blk));
     return user_mem(blk);
   } else {
     blk = request_block_from_os(size);
@@ -207,6 +214,7 @@ word_t *alloc(ptrdiff_t size) {
     /* Links point nowhere while the block is used. */
     blk->prev = NULL;
     blk->next = NULL;
+    dbg("Allocating %td bytes at %p\n", size, user_mem(blk));
     return user_mem(blk);
   }
 
@@ -230,7 +238,7 @@ void merge_block(BlockHdr *blk, BlockHdr **list) {
   /*
    * We don't need to consider BLK->NEXT, since that's always
    * NULL here. Merges occur right after adding the given block
-   * to the free list. This means that this block is always the
+p   * to the free list. This means that this block is always the
    * first one (and thus BLK->NEXT == NULL).
    */
 
@@ -249,6 +257,8 @@ void merge_block(BlockHdr *blk, BlockHdr **list) {
 void wfree(word_t *mem) {
   if (mem == NULL)
     return;
+
+  dbg("Freeing %p\n", mem);
 
   BlockHdr *blk = mem_hdr(mem);
   add_block(blk, &global_free_list);
@@ -296,14 +306,24 @@ void *calloc(size_t n, size_t size) {
   return mem;
 }
 
-/* Helper to print without doing formatting on the heap. */
-void print(char *s) {
-  assert(s != NULL);
-  write(STDOUT_FILENO, s, strlen(s));
+/*
+ * Calling printf and friends might mess with the heap.
+ * To bypass any random errors, use this function to
+ * print using write(2) and vsnprintf(3).
+ * It also prints to stderr instead of stdout.
+ */
+void dbg(char *fmt, ...) {
+  va_list argp;
+  va_start(argp, fmt);
+  assert(fmt != NULL);
+  char buf[0x1000] = {0};
+  vsnprintf(buf, 0x1000, fmt, argp);
+  write(STDERR_FILENO, buf, strlen(buf));
+  va_end(argp);
 }
 
 int main(void) {
-  print("TEST: Aligning allocations\n");
+  dbg("TEST: Aligning allocations\n");
   assert(align(0) == 0);
   assert(align(1) == 8);
   assert(align(3) == 8);
@@ -314,7 +334,7 @@ int main(void) {
   assert(align(16) == 16);
   assert(align(121) == 128);
 
-  print("TEST: Allocating blocks\n");
+  dbg("TEST: Allocating blocks\n");
   word_t *a1 = alloc(1);
   assert(mem_hdr(a1)->size == 8);
   assert(mem_hdr(a1)->next == NULL);
@@ -323,7 +343,7 @@ int main(void) {
   word_t *a3 = alloc(14);
   assert(mem_hdr(a3)->size == 16);
 
-  print("TEST: Freeing blocks\n");
+  dbg("TEST: Freeing blocks\n");
   wfree(alloc(0));
 
   wfree(a1);
@@ -336,12 +356,12 @@ int main(void) {
   assert(mem_hdr(a1)->next == mem_hdr(a3));
   assert(mem_hdr(a1)->prev == NULL);
 
-  print("TEST: Re-using blocks\n");
+  dbg("TEST: Re-using blocks\n");
   word_t *a4 = alloc(8);
   assert(mem_hdr(a4) == mem_hdr(a1));
 
   reset_heap();
-  print("TEST: Splitting blocks\n");
+  dbg("TEST: Splitting blocks\n");
   word_t *a5 = alloc(2 * 64 + sizeof(BlockHdr));
   wfree(a5);
   /* a5 should be re-used and split twice. */
@@ -353,7 +373,7 @@ int main(void) {
   assert(((ptrdiff_t)a5) + 64 == (ptrdiff_t)mem_hdr(a7));
 
   reset_heap();
-  print("TEST: Merging blocks\n");
+  dbg("TEST: Merging blocks\n");
   /*
    * No matter the order, allocations that live next
    * to each other on heap should be merged on free.
@@ -420,4 +440,3 @@ int main(void) {
 
   return 0;
 }
-
