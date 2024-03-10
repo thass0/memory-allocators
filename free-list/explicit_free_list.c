@@ -10,11 +10,7 @@
 #include <string.h> /* memcpy */
 #include <unistd.h> /* sbrk */
 
-/* Both for the dbg helper. */
-#include <stdarg.h>
-#include <stdio.h> /* vsnprintf */
-
-void dbg(char *fmt, ...);
+#include "dbg.h"
 
 typedef intptr_t word_t;
 
@@ -304,22 +300,6 @@ void *calloc(size_t n, size_t size) {
 
   memset(mem, 0, size);
   return mem;
-}
-
-/*
- * Calling printf and friends might mess with the heap.
- * To bypass any random errors, use this function to
- * print using write(2) and vsnprintf(3).
- * It also prints to stderr instead of stdout.
- */
-void dbg(char *fmt, ...) {
-  va_list argp;
-  va_start(argp, fmt);
-  assert(fmt != NULL);
-  char buf[0x1000] = {0};
-  vsnprintf(buf, 0x1000, fmt, argp);
-  write(STDERR_FILENO, buf, strlen(buf));
-  va_end(argp);
 }
 
 int main(void) {
