@@ -93,6 +93,51 @@ BlockHdr *find_block(size_t size) {
   return best;
 }
 
+/* Insert a block into the bucket that best fits its size. */
+void insert_block(BlockHdr *blk) {
+  int idx = bucket_idx(blk->size);
+  blk->next = global_buckets[idx];
+  global_buckets[idx] = blk;
+}
+
+/*
+ * Split off as much memory as possible from the end of the
+ * given block so that it only contains SIZE bytes.
+ */
+void split_block(BlockHdr *blk, size_t size) {
+  assert(blk->size >= size);
+
+  /*
+   * If we want to create another block, we need space
+   * for the new block's header, too.
+   */
+  size_t real_size = sizeof(BlockHdr) + size;
+
+  /*
+   * +8 because we want the new block to also
+   * contain at least a word of memory.
+   */
+  if (blk->size < real_size + 8)
+    return;
+
+  /* Create the new block and move add it to the right bucket. */
+  BlockHdr *new_blk = (BlockHdr *)((size_t)blk + real_size);
+  new_blk->size = blk->size - real_size;
+  new_blk->used = FALSE;
+  new_blk->next = NULL;
+  insert_block(new_blk);
+
+  /*
+   * Shrink the original block's size. This block and
+   * its position in the free list doesn't change in
+   * any other way.
+   * The bucket of BLK won't change, because if SIZE were
+   * too small of the bucket of BLK, FIND_BLOCK would not
+   * have returned BLK when given SIZE.
+   */
+  blk->size = size;
+}
+
 BlockHdr *request_block_from_os(size_t size) {
   BlockHdr *blk = sbrk(0); /* Returns current break. */
 
@@ -131,18 +176,14 @@ word_t *alloc(ptrdiff_t ssize) {
 
   BlockHdr *blk = NULL;
   if ((blk = find_block(size)) != NULL) {
+    split_block(blk, size);
     blk->used = TRUE;
     return (word_t *)(blk + 1);
   } else {
     blk = request_block_from_os(size);
     blk->size = size;
     blk->used = TRUE;
-
-    /* Insert the block into the right bucket. */
-    int idx = bucket_idx(blk->size);
-    blk->next = global_buckets[idx];
-    global_buckets[idx] = blk;
-
+    insert_block(blk);
     return (word_t *)(blk + 1);
   }
 }
@@ -271,6 +312,58 @@ int main(void) {
     assert(hdr(a7)->size == 72);
     assert(global_buckets[TINY_IDX] == hdr(a7));
     wfree(a7);
+  }
+
+  {
+    reset_heap();
+    dbg("TEST: Splitting blocks\n");
+    /* Splitting on re-use in the same bucket. */
+    word_t *a1 = alloc(16 + sizeof(BlockHdr));
+    assert(hdr(a1)->size == 16 + sizeof(BlockHdr));
+    assert(hdr(a1)->next == NULL);
+    assert(global_buckets[TINY_IDX] == hdr(a1));
+    wfree(a1);
+    word_t *a2 = alloc(8);
+    assert(hdr(a2) == hdr(a1));
+    assert(hdr(a2)->used == TRUE);
+    assert(hdr(a2)->size == 8);
+    assert(hdr(a2)->next == NULL);
+    /* global_buckets[TINY_IDX] is the block that has been split off. */
+    assert(global_buckets[TINY_IDX]->next == hdr(a2));
+    assert(global_buckets[TINY_IDX]->used == FALSE);
+    assert(global_buckets[TINY_IDX]->size == 8);
+
+    /* Splitting on re-use changes buckets if sizes grow too small. */
+    word_t *a3 = alloc(304 + sizeof(BlockHdr));
+    assert(hdr(a3)->size == 304 + sizeof(BlockHdr));
+    assert(hdr(a3)->used == TRUE);
+    assert(global_buckets[MID_IDX] == hdr(a3));
+    wfree(a3);
+
+    word_t *a4 = alloc(256);
+    assert(a4 == a3);
+    assert(hdr(a4)->size == 256);
+    assert(global_buckets[MID_IDX] == hdr(a4));
+    /* The block that's split off is stored in the TINY bucket. */
+    assert(global_buckets[TINY_IDX]->used == FALSE);
+    assert(global_buckets[TINY_IDX]->size == 304 - 256);
+
+    reset_heap();
+    /*
+     * Blocks don't get split if the original block would become a
+     * size that's too small for its bucket.
+     */
+    word_t *a5 = alloc(256 + sizeof(BlockHdr));
+    assert(global_buckets[MID_IDX] == hdr(a5));
+    wfree(a5);
+    word_t *a6 = alloc(64);
+    assert(a6 != a5);
+    assert(global_buckets[TINY_IDX] == hdr(a6));
+    assert(global_buckets[MID_IDX] == hdr(a5));
+    assert(hdr(a6)->used == TRUE);
+    assert(hdr(a6)->size == 64);
+    assert(hdr(a5)->used == FALSE);
+    assert(hdr(a5)->size == 256 + sizeof(BlockHdr));
   }
 
   return 0;
